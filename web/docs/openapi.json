@@ -1,0 +1,129 @@
+{
+  "paths": {
+    "/openapi/agent": {
+      "post": {
+        "operationId": "exchange",
+        "summary": "控制端交换任务、结果及心跳",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "live": {
+                    "type": "object",
+                    "description": "带单调 revision 的实时任务、输出片段和排队消息；独立于完整索引心跳",
+                    "example": {"revision": 1794750000000,"jobs": [],"approvals": [],"queue": []}
+                  },
+                  "snapshot": {
+                    "type": "object",
+                    "example": {
+                      "hosts": [],
+                      "jobs": [],
+                      "approvals": []
+                    }
+                  },
+                  "results": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "ok",
+                        "value"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "example": "12345678-1234-4234-8234-123456789abc"
+                        },
+                        "ok": {
+                          "type": "boolean",
+                          "example": true
+                        },
+                        "value": {
+                          "nullable": true,
+                          "example": {}
+                        }
+                      }
+                    }
+                  },
+                  "capacity": {
+                    "type": "number",
+                    "example": 4
+                  },
+                  "cacheUpdates": {
+                    "type": "array",
+                    "description": "只读历史缓存更新",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已确认的结果与本轮领取的任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "acked",
+                    "commands"
+                  ],
+                  "properties": {
+                    "acked": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "example": "12345678-1234-4234-8234-123456789abc"
+                      }
+                    },
+                    "commands": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "action",
+                          "args"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "example": "12345678-1234-4234-8234-123456789abc"
+                          },
+                          "action": {
+                            "type": "string",
+                            "example": "sessions"
+                          },
+                          "args": {
+                            "type": "object",
+                            "example": {
+                              "host": "worker-gpu"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "cacheAcked": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

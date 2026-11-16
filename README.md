@@ -1,0 +1,83 @@
+# Codex × 飞书工作台
+
+在手机飞书中切换远端机器、项目和 Codex 会话，查看历史、提交任务、排队跟进和引导正在执行的任务。
+
+这是可自行部署的单用户社区版。每位使用者部署自己的控制器和飞书应用，使用自己的服务器、Codex 登录和模型额度。仓库不包含任何生产凭据、会话数据或服务器访问权限；GitHub 仓库本身不是在线服务。
+
+## 功能
+
+- 按机器、项目目录整理会话，沿用原生会话 ID 和名称。
+- 查看历史，支持 Markdown、代码、表格和数学公式。
+- 选择服务器实际提供的模型与推理强度。
+- 持续显示实际输出增量，按消息 ID 合并历史与输出，避免重复。
+- 默认 FIFO 排队；可取消未发送消息，点「立即引导」补充当前轮次。
+- 持久登录、任务状态、停止本轮、审批和补充问题。
+- 总管家调用受控工具跨机器安排任务，回传实验图片。
+
+## 部署结构
+
+```text
+手机飞书 → 自己的妙搭网页（web/）
+                 ↑ 出站 HTTPS，同步命令、缓存与输出
+          自己的常驻控制器（src/）
+                 ↓ SSH 字节转发
+          已运行的原生 Codex daemon
+```
+
+控制器不升级、统一、重启原生 Codex，也不直接修改原生数据库。不同服务器可以运行不同版本，但它们必须支持所需 RPC。连接失败或结果不确定时不会自动重发任务。
+
+## 快速开始：机器人与控制器
+
+需要 Python 3.11+、SSH，以及至少一台已经配置好 Codex 登录、正在运行原生 daemon 的机器。
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+cp config.example.toml config.local.toml
+cp .env.example .env
+chmod 600 .env config.local.toml
+```
+
+1. 在飞书开放平台创建自己的应用机器人，配置长连接事件与卡片回调，见 [飞书设置](docs/FEISHU_SETUP.md)。
+2. 编辑 `config.local.toml`：SSH 别名、目录、已有 daemon socket 和总管家模型。例子中的路径与 socket 都是占位符。
+3. 在 `.env` 填自己的 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`，可选指定 `WORKBENCH_SSH_CONFIG`。
+4. 运行 `.venv/bin/feishu-codex doctor` 检查连接；它不会调用模型。
+5. 运行 `.venv/bin/feishu-codex run`，私聊机器人发送终端显示的一次性 `/绑定 ...`。
+
+完成这些步骤后可使用机器人命令。独立手机网页还需部署 `web/`，按 [网页部署说明](docs/WEB_DEPLOYMENT.md) 操作。**网页依赖飞书妙搭运行时与数据库，不能直接作为普通静态网页部署到 GitHub Pages。**
+
+## 手机操作
+
+展开菜单 → 选择机器 → 展开项目 → 选择会话。输入框上方可选模型和强度。
+
+任务运行时，发送箭头把后续消息加入队列；输入框旁「引导」补充当前任务；队列消息右侧「立即引导」可把它转为当前任务的补充。状态不确定时会禁用引导并提示核查，不会擅自新开一轮。停止或失败会暂停后续队列。
+
+引导目前针对工作台跟踪的活动任务。桌面端独立发起、未被工作台跟踪的轮次，不承诺可直接引导。
+
+## 常驻与边界
+
+验证前台收发后，Linux 控制器可运行：
+
+```bash
+.venv/bin/pip install 'supervisor>=4,<5'
+.venv/bin/python scripts/install-server.py
+.venv/bin/supervisorctl -c .local/supervisord.conf status
+```
+
+容器重建后需由平台启动命令调用 `scripts/ensure-server.sh`；个人目录、`.env` 和 `.local` 应放在持久化存储。控制器常驻不等于模型持续推理，模型仅在实际任务时运行。
+
+当前版本是单用户应用，不提供多租户隔离。工作台展示与缓存包含私有对话，使用者应限制自己应用与机器的访问。不能从仓库中获取维护者的私人工作台。
+
+## 开发与发布
+
+```bash
+.venv/bin/pytest -q
+cd web
+npm ci
+npm run lint
+npm run build
+```
+
+Node 22+；托管平台要求 npm 10 的环境请使用 npm 10。网页的真实联调需要自己的妙搭应用、数据库和环境变量。
+
+维护、同步和隐私检查见 [维护说明](docs/MAINTAINING.md)，兼容范围见 [验证说明](docs/VALIDATION.md)。MIT 许可证适用于本项目代码；依赖由其各自许可证与平台条款约束，见 [第三方说明](THIRD_PARTY_NOTICES.md)。本项目不是 OpenAI 或飞书官方产品。

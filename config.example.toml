@@ -1,0 +1,32 @@
+# Use your own SSH aliases, absolute paths and existing native daemon sockets.
+state_dir = ".local/state"
+supervisor_cwd = ".local/supervisor"
+supervisor_host = "worker-gpu"
+# Replace with a model returned by your server's model/list.
+supervisor_model = "REPLACE_WITH_AVAILABLE_MODEL"
+supervisor_effort = "medium"
+progress_interval_seconds = 30
+
+[[hosts]]
+id = "worker-gpu"
+label = "My cluster · GPU"
+cluster = "My cluster"
+ssh = "workbench-gpu"
+default_cwd = "/home/worker/projects"
+roots = ["/home/worker"]
+session_group = "my-cluster"
+transport = "proxy"
+native_socket = "/tmp/codex-daemon-1000/REPLACE_WITH_EXISTING_SOCKET"
+
+# Optional second host. Remove this section if you only have one machine.
+# Hosts sharing the same Codex history must share a session_group.
+[[hosts]]
+id = "worker-cpu"
+label = "My cluster · CPU"
+cluster = "My cluster"
+ssh = "workbench-cpu"
+default_cwd = "/home/worker/projects"
+roots = ["/home/worker"]
+session_group = "my-cluster"
+transport = "proxy"
+native_socket = "/tmp/codex-daemon-1000/REPLACE_WITH_EXISTING_SOCKET"
