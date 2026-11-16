@@ -22,6 +22,7 @@ class WebRelay:
         self.s = service
         self.tasks = set()
         self.enqueue_lock = asyncio.Lock()
+        self.exchange_event = asyncio.Event()
         self.url = os.environ['WORKBENCH_SITE_URL'].rstrip('/')
         self.agent_url = os.getenv('WORKBENCH_AGENT_URL', self.url+'/api/agent')
         headers = {}
@@ -89,6 +90,9 @@ class WebRelay:
         try:
             while not self.s.stopping:
                 try:
+                    # Clear before collecting results so completions during the
+                    # exchange wake the next batch instead of waiting two seconds.
+                    self.exchange_event.clear()
                     with self.s.state.lock:
                         ready = [dict(r) for r in self.s.state.db.execute("SELECT * FROM web_commands WHERE status='ready' LIMIT 20")]
                     results = [{'id':r['id'],'ok':bool(r['ok']),'value':json.loads(r['result'])} for r in ready]
@@ -116,7 +120,12 @@ class WebRelay:
                 except Exception as error:
                     failures += 1
                     log.warning('Web relay unavailable: %s', self.s.redact(str(error))[:300])
-                await asyncio.sleep(min(60, 2 * 2**min(failures, 5)))
+                if self.s.stopping:break
+                if failures:
+                    await asyncio.sleep(min(60, 2 * 2**min(failures, 5)))
+                else:
+                    try:await asyncio.wait_for(self.exchange_event.wait(),2)
+                    except asyncio.TimeoutError:pass
         finally:
             warmer.cancel()
             live.cancel()
@@ -139,6 +148,7 @@ class WebRelay:
         with self.s.state.lock,self.s.state.db:
             self.s.state.db.execute("UPDATE web_commands SET status='ready',ok=?,result=? WHERE id=?",
                 (ok,json.dumps(value,ensure_ascii=False),command['id']))
+        self.exchange_event.set()
 
     async def history(self, host, thread, cursor=None):
         s = self.s

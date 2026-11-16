@@ -3,9 +3,9 @@ import type {QueuedMessage} from '@shared/workbench';
 import {Clock3,X,Play,CornerUpRight} from 'lucide-react';
 
 interface QueueProps {items:QueuedMessage[];canSteer:boolean;steerUnavailable?:string;onCancel:(id:string)=>void;onResume:(id:string)=>void;onSteer:(id:string)=>void}
-const labels:Record<string,string>={accepting:'正在保存',queued:'排队中',dispatching:'正在发送',unknown:'发送待核查',failed:'未能发送'};
+const labels:Record<string,string>={accepting:'正在提交',accepted:'已送达，等待后台确认',queued:'排队中',dispatching:'正在发送',unknown:'发送待核查',failed:'未能发送'};
 export function MessageQueue({items,canSteer,steerUnavailable,onCancel,onResume,onSteer}:QueueProps){
- const pending=items.filter(m=>['accepting','queued','dispatching','unknown','failed'].includes(m.status));
+ const pending=items.filter(m=>['accepting','accepted','queued','dispatching','unknown','failed'].includes(m.status));
  if(!pending.length)return null;
  const paused=pending.find(m=>m.paused);
  return <section className="message-queue" aria-label="待发送消息">

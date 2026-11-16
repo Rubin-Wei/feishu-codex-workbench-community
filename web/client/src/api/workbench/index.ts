@@ -10,11 +10,13 @@ export async function api<T=Snapshot>(url:string,options?:{method?:string;data?:
    meta:{autoJumpToLogin:false},headers:{'Cache-Control':'no-store'}});return r.data;}
  catch(e:unknown){if(axios.isAxiosError(e)&&e.response?.status===401)window.dispatchEvent(new Event('workbench-login-required'));throw e;}
 }
-export async function command<K extends keyof CommandReplies>(action:K,args:object):Promise<CommandReplies[K]>{
+export async function command<K extends keyof CommandReplies>(action:K,args:object,onAccepted?:()=>void):Promise<CommandReplies[K]>{
  const id=crypto.randomUUID();
  await api('/api/commands',{method:'POST',data:{id,action,args}});
- for(let i=0;i<95;i++){
-  await new Promise(r=>setTimeout(r,1000));
+ onAccepted?.();
+ const deadline=Date.now()+95000;
+ for(let i=0;Date.now()<deadline;i++){
+  if(i)await new Promise(r=>setTimeout(r,i<8?250:1000));
   const r=await api<CommandPoll<CommandReplies[K]>>('/api/commands?id='+id);
   if(r.status==='done')return r.result;
   if(['failed','unknown'].includes(r.status))throw Error(r.result?.error||'操作未完成');

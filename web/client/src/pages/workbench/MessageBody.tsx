@@ -1,4 +1,4 @@
-import {useRef, useState, type ReactNode} from 'react';
+import {memo, useRef, useState, type ReactNode} from 'react';
 import {Check, Copy} from 'lucide-react';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
@@ -26,7 +26,7 @@ function CodeBlock({children}: {children?: ReactNode}) {
   </div>;
 }
 
-export function MessageBody({text}: {text: string}) {
+export const MessageBody = memo(function MessageBody({text}: {text: string}) {
   return <Markdown className="message-markdown" remarkPlugins={[remarkMath]}
     rehypePlugins={[[rehypeHighlight, {detect: false, ignoreMissing: true}], rehypeKatex]}
     components={{
@@ -34,4 +34,4 @@ export function MessageBody({text}: {text: string}) {
       table: ({children}) => <div className="markdown-table" tabIndex={0} role="region" aria-label="可横向滚动的表格"><table>{children}</table></div>,
       img: ({src, alt}) => <Image src={src} alt={alt || '会话图片'} sizes="(max-width: 760px) 90vw, 780px"/>,
     }}>{text}</Markdown>;
-}
+});

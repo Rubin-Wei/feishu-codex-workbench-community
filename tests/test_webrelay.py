@@ -1,3 +1,4 @@
+import asyncio
 import json
 from unittest.mock import AsyncMock
 import pytest
@@ -66,3 +67,27 @@ async def test_project_index_preserves_names_paths_and_pagination(relay):
  assert page['data'][0]['preview']=='' and 'private' not in page['data'][0]
  assert page['nextCursor']=='older'
  await relay.client.aclose()
+
+async def test_completed_command_is_acknowledged_without_poll_delay_or_replay(relay):
+ """An in-flight exchange completion should wake promptly; duplicate IDs stay claimed."""
+ import httpx
+ await relay.client.aclose()
+ relay.cache.run=AsyncMock()
+ relay.live_loop=AsyncMock()
+ relay.snapshot=lambda:{}
+ relay.cache.pending=lambda:[]
+ relay.cache.acknowledge=lambda _:None
+ relay.dispatch=AsyncMock(return_value={'id':'queued-message','status':'queued'})
+ command={'id':'request','action':'enqueue','args':{}}
+ calls=[]
+ async def exchange(request):
+  payload=json.loads(request.content);calls.append(payload)
+  if len(calls)==1:return httpx.Response(200,json={'commands':[command]})
+  assert payload['results']==[{'id':'request','ok':True,'value':{'id':'queued-message','status':'queued'}}]
+  relay.s.stopping=True
+  return httpx.Response(200,json={'commands':[command],'acked':['request']})
+ relay.client=httpx.AsyncClient(transport=httpx.MockTransport(exchange))
+ await asyncio.wait_for(relay.run(),timeout=1)
+ relay.dispatch.assert_awaited_once_with('enqueue',{})
+ assert len(calls)==2
+ assert relay.s.state.db.execute('SELECT status FROM web_commands').fetchone()[0]=='acked'

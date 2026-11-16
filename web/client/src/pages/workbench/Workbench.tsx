@@ -1,4 +1,5 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
+import {readRecents,visitSession} from '@client/src/api/workbench/recents';
 import {peekHistory,readHistory,storeHistory,prefetchHistories,clearHistoryCache} from '@client/src/api/workbench/history-cache';
 import {ModelPicker} from './ModelPicker';
 import {MessageQueue} from './MessageQueue';
@@ -9,11 +10,13 @@ import {groupProjects, projectName} from './projects';
 import {Skeleton} from '@client/src/components/ui/skeleton';
 import {api, command, errorMessage, logout} from '@client/src/api/workbench';
 import type {Thread,Message,Snapshot,QuestionData,CommandReplies,QueuedMessage} from '@shared/workbench';
-import {Menu,Plus,Search,ArrowUp,ChevronLeft,ChevronDown,Folder,RefreshCw,X,Square,PanelLeftClose,MessagesSquare,Command,ExternalLink} from 'lucide-react';
+import {Menu,Plus,Search,ArrowUp,ChevronLeft,ChevronDown,Folder,RefreshCw,X,Square,PanelLeftClose,MessagesSquare,Command,ExternalLink,History,LoaderCircle,Check} from 'lucide-react';
 const statusNames:Record<string,string>={starting:'提交中',running:'进行中',waiting:'等待你的回复',unknown:'待核查',completed:'已完成',failed:'失败',interrupted:'已停止'};
 export default function Workbench(){
  const [state,setState]=useState<Snapshot>({online:false,hosts:[],jobs:[],approvals:[]}),[host,setHost]=useState('supervisor'),[threads,setThreads]=useState<Thread[]>([]),[thread,setThread]=useState<Thread|null>(null),[messages,setMessages]=useState<Message[]>([]),[next,setNext]=useState<string|null>(null),[older,setOlder]=useState<string|null>(null),[query,setQuery]=useState(''),[input,setInput]=useState(''),[error,setError]=useState(''),[loading,setLoading]=useState(''),[sending,setSending]=useState(false),[sidebar,setSidebar]=useState(false),[modal,setModal]=useState(false),[cwd,setCwd]=useState(''),[title,setTitle]=useState(''),[dirs,setDirs]=useState<string[]>([]),[showJobs,setShowJobs]=useState(false),[indexing,setIndexing]=useState(false),[collapsed,setCollapsed]=useState<Set<string>>(new Set()),[model,setModel]=useState('inherit'),[effort,setEffort]=useState('inherit');
  const [pendingMessages,setPendingMessages]=useState<QueuedMessage[]>([]);
+ const [recents,setRecents]=useState(readRecents),[sessionView,setSessionView]=useState<'recent'|'projects'>('recent');
+ const [sendNotice,setSendNotice]=useState('');
  const messagesView=useRef<HTMLDivElement>(null),stickBottom=useRef(true),pendingSends=useRef(0);
  const snapshot=useRef(state),optimistic=useRef(new Map<string,{host:string;thread:Thread}>());snapshot.current=state;
  const restored=useRef(false),listGeneration=useRef(0),generation=useRef(0),tail=useRef<HTMLDivElement>(null),current=useRef({host,thread}),lastTerminal=useRef(''); current.current={host,thread};
@@ -70,10 +73,11 @@ export default function Workbench(){
   finally{if(g===listGeneration.current)setIndexing(false)}
  }
  function remember(hostId:string,threadId?:string){try{localStorage.setItem('codex-workbench-position',JSON.stringify({host:hostId,thread:threadId}))}catch{/* Some embedded browsers disable local storage. */}}
+ function rememberVisit(hostId:string,threadId:string){setRecents(items=>visitSession(items,hostId,threadId))}
  async function selectHost(id:string){
   remember(id);
   const g=++generation.current;++listGeneration.current;setIndexing(false);
-  setInput('');setQuery('');setModal(false);setHost(id);setThread(null);setMessages([]);
+  setInput('');setSendNotice('');setQuery('');setModal(false);setHost(id);setThread(null);setMessages([]);
   setThreads([]);setNext(null);setOlder(null);setError('');setLoading('');
   if(id!=='supervisor'){
    const catalog=snapshot.current.catalogs?.[id];
@@ -82,14 +86,15 @@ export default function Workbench(){
   }
   setLoading('正在读取会话…');
   try{const r=await command('supervisor',{});if(g!==generation.current)return;
-   if(r.thread){setThread(r.thread);setMessages(r.messages||[]);setOlder(r.nextCursor)}
+   if(r.thread){setThread(r.thread);setMessages(r.messages||[]);setOlder(r.nextCursor);rememberVisit(id,r.thread.id)}
   }catch(e:unknown){if(g===generation.current)setError(errorMessage(e))}
   finally{if(g===generation.current)setLoading('')}
  }
  async function selectThread(t:Thread,h=host,force=false){
+  rememberVisit(h,t.id);
   remember(h,t.id);stickBottom.current=true;const g=++generation.current;
   if(h!==current.current.host){setThreads(catalogThreads(snapshot.current,h));setNext(null);setQuery('');++listGeneration.current;setIndexing(false)}
-  setInput('');setHost(h);setThread(t);setSidebar(false);setError('');
+  setInput('');setSendNotice('');setHost(h);setThread(t);setSidebar(false);setError('');
   const cached=peekHistory(h,t.id);
   setMessages(cached?.messages||[]);setOlder(cached?.nextCursor||null);setLoading(cached?'':'正在载入历史对话…');
   if(cached)setTimeout(()=>tail.current?.scrollIntoView(),0);
@@ -119,15 +124,16 @@ export default function Workbench(){
  useEffect(()=>{if(stickBottom.current&&messagesView.current){const box=messagesView.current;requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight})}},[active?.partial,active?.partialItems,messages.length,messageQueue.length]);
  async function send(mode:'queue'|'steer'='queue'){
   if(!input.trim()||pendingSends.current>=5||(!thread&&host!=='supervisor')||(mode==='steer'&&!canSteer))return;
-  setError('');const text=input,g=generation.current,id='pending:'+crypto.randomUUID();
+  setError('');setSendNotice('正在提交…');const text=input,g=generation.current,id='pending:'+crypto.randomUUID();
   const queued:QueuedMessage={id,host,thread:thread?.id||'',prompt:text,mode,status:'accepting'};
   setInput('');stickBottom.current=true;pendingSends.current++;setSending(true);setPendingMessages(items=>[...items,queued]);
   try{
-   const r=mode==='steer'?await command('steer',{job:active!.id,expectedTurn:active!.turn,prompt:text}):await command('enqueue',{host,thread:thread?.id,prompt:text,...(model!=='inherit'?{model}:{}),...(effort!=='inherit'?{effort}:{})});
+   const accepted=()=>{setPendingMessages(items=>items.map(p=>p.id===id?{...p,status:'accepted'}:p));if(g===generation.current)setSendNotice('已送达，等待后台确认…')};
+   const r=mode==='steer'?await command('steer',{job:active!.id,expectedTurn:active!.turn,prompt:text},accepted):await command('enqueue',{host,thread:thread?.id,prompt:text,...(model!=='inherit'?{model}:{}),...(effort!=='inherit'?{effort}:{})},accepted);
    setPendingMessages(items=>items.map(p=>p.id===id?r:p));
-   if(g===generation.current&&!thread)setThread({id:r.thread,cwd:'',name:'总管家'});
-   await refresh();
-  }catch(e:unknown){setPendingMessages(items=>items.filter(p=>p.id!==id));if(g===generation.current){setError(errorMessage(e));setInput(value=>value||text)}}
+   if(g===generation.current){setSendNotice(mode==='steer'?'已引导当前任务':'已加入队列');if(!thread)setThread({id:r.thread,cwd:'',name:'总管家'});rememberVisit(host,r.thread)}
+   void refresh();
+  }catch(e:unknown){setPendingMessages(items=>items.filter(p=>p.id!==id));if(g===generation.current){setSendNotice('提交未确认，请查看提示');setError(errorMessage(e));setInput(value=>value||text)}}
   finally{pendingSends.current--;setSending(pendingSends.current>0)}
  }
  async function steerQueued(id:string){if(!canSteer)return;await perform('steer',{job:active!.id,expectedTurn:active!.turn,queued:id})}
@@ -135,7 +141,12 @@ export default function Workbench(){
  async function perform(action:keyof CommandReplies,args:object){setError('');try{await command(action,args);await refresh()}catch(e:unknown){setError(errorMessage(e))}}
  async function browse(path:string){const g=generation.current;setCwd(path);setLoading('正在读取目录…');try{const r=await command('directories',{host,path});if(g!==generation.current)return;setCwd(r.path);setDirs(r.directories)}catch(e:unknown){if(g===generation.current)setError(errorMessage(e))}finally{if(g===generation.current)setLoading('')}}
  async function create(){if(!title.trim()||!cwd)return;const g=generation.current;setLoading('正在创建会话…');try{const r=await command('new_session',{host,cwd,title});if(g!==generation.current)return;setModal(false);optimistic.current.set(host+':'+r.id,{host,thread:r});storeHistory(host,r.id,{thread:r,messages:[]});setThreads(t=>[r,...t]);await selectThread(r)}catch(e:unknown){if(g===generation.current)setError(errorMessage(e))}finally{if(g===generation.current)setLoading('')}}
- const selectedHost=state.hosts.find(h=>h.id===host);const projects=groupProjects(threads,query);
+ const selectedHost=state.hosts.find(h=>h.id===host);const projects=useMemo(()=>groupProjects(threads,query),[threads,query]);
+ const recentThreads=recents.filter(r=>r.host==='supervisor'||state.hosts.some(h=>h.id===r.host)).map(r=>({
+  ...r,hostLabel:r.host==='supervisor'?'总管家':state.hosts.find(h=>h.id===r.host)?.label||r.host,
+  session:state.catalogs?.[r.host]?.threads?.find(t=>t.id===r.thread)||optimistic.current.get(r.host+':'+r.thread)?.thread||
+   (r.host===host&&r.thread===thread?.id?thread:{id:r.thread,cwd:'',name:r.host==='supervisor'?'我的总管家':'会话 · '+r.thread.slice(-8)}),
+ })).filter(r=>[r.session.name,r.session.preview,r.session.cwd,r.hostLabel].some(s=>s?.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())));
  function openNew(path=thread?.cwd||selectedHost?.default_cwd||''){setTitle('');setDirs([]);setCwd(path);setModal(true)}
  function toggleProject(path:string){setCollapsed(previous=>{const value=new Set(previous);if(value.has(path))value.delete(path);else value.add(path);return value})}
  return <main className="app-shell">
@@ -144,12 +155,13 @@ export default function Workbench(){
    <div className="brand"><span className="brand-icon"><Command size={18}/></span><b>Codex <span>Workspace</span></b><button className="icon mobile" aria-label="关闭菜单" onClick={()=>setSidebar(false)}><X size={18}/></button></div>
    <button className={'supervisor '+(host==='supervisor'?'selected':'')} onClick={()=>selectHost('supervisor')}><span className="spark">✳</span><span>总管家<small>{state.supervisor_model||'原生 Codex'} · {state.supervisor_effort||'默认'}</small></span><span className="keycap">⌘</span></button>
    <div className="section-label">开发机器</div>
-   <div className="host-picker"><select aria-label="选择集群和机器" value={host==='supervisor'?'':host} onChange={e=>selectHost(e.target.value)}><option value="" disabled>选择集群 / 机器</option>{state.hosts.map(h=><option key={h.id} value={h.id}>{h.label}{state.catalogs?.[h.id]?.connected?' · 已连接':state.catalogs?.[h.id]?.syncing?' · 连接中':' · 重连中'}</option>)}</select><ChevronDown size={15}/></div>
+   <div className="host-picker"><select aria-label="选择集群和机器" value={host==='supervisor'?'':host} onChange={e=>{setSessionView('projects');selectHost(e.target.value)}}><option value="" disabled>选择集群 / 机器</option>{state.hosts.map(h=><option key={h.id} value={h.id}>{h.label}{state.catalogs?.[h.id]?.connected?' · 已连接':state.catalogs?.[h.id]?.syncing?' · 连接中':' · 重连中'}</option>)}</select><ChevronDown size={15}/></div>
    <button className="new-chat" disabled={host==='supervisor'||!state.online} onClick={()=>openNew()}><Plus size={17}/>新建会话</button>
    <div className="search"><Search size={14}/><input aria-label="搜索项目或会话" value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索项目或会话"/></div>
-   <div className="section-label">{host==='supervisor'?'协调会话':`项目 · ${projects.length}`} <button className="icon" aria-label="刷新会话" onClick={()=>host==='supervisor'?selectHost(host):readSessions(host,null,false)} disabled={!state.online}><RefreshCw size={13}/></button></div>
+   <div className="session-view" role="tablist" aria-label="会话导航"><Button role="tab" aria-selected={sessionView==='recent'} variant="ghost" size="sm" onClick={()=>setSessionView('recent')}><History size={14}/>最近访问</Button><Button role="tab" aria-selected={sessionView==='projects'} variant="ghost" size="sm" onClick={()=>setSessionView('projects')}><Folder size={14}/>项目目录</Button></div>
+   <div className="section-label">{sessionView==='recent'?'本设备 · 最近 8 个会话':host==='supervisor'?'协调会话':`项目 · ${projects.length}`} <button className="icon" aria-label="刷新会话" onClick={()=>host==='supervisor'?selectHost(host):readSessions(host,null,false)} disabled={!state.online}><RefreshCw size={13}/></button></div>
    <nav className="threads" aria-label="项目与会话">
-    {host==='supervisor'?<button className="thread selected" onClick={()=>selectHost('supervisor')}><MessagesSquare size={15}/><div>我的总管家<small>跨集群安排工作</small></div></button>:
+    {sessionView==='recent'?<div className="recent-sessions" aria-label="最近访问的会话">{recentThreads.map(r=><button className={'thread recent-thread '+(host===r.host&&thread?.id===r.thread?'selected':'')} key={r.host+':'+r.thread} aria-current={host===r.host&&thread?.id===r.thread?'page':undefined} title={`${r.session.name||r.session.preview||'未命名会话'} · ${r.hostLabel}`} onClick={()=>selectThread(r.session,r.host)}><MessagesSquare size={14}/><div><b>{r.session.name||r.session.preview||'未命名会话'}</b><small>{r.hostLabel}{r.session.cwd?' · '+projectName(r.session.cwd):''}</small></div>{r.session.status?.type==='active'&&<i className="live-dot"/>}</button>)}{!recentThreads.length&&<div className="aside-empty">{query?'没有匹配的最近会话':'打开会话后，这里会保留最近访问的 8 条。'}{!query&&<Button variant="ghost" size="sm" onClick={()=>setSessionView('projects')}>浏览项目目录</Button>}</div>}</div>:host==='supervisor'?<button className="thread selected" onClick={()=>selectHost('supervisor')}><MessagesSquare size={15}/><div>我的总管家<small>跨集群安排工作</small></div></button>:
      projects.map(project=>{
       const expanded=!!query.trim()||!collapsed.has(project.path);
       return <section className="project" key={project.path}>
@@ -165,9 +177,9 @@ export default function Workbench(){
        </button>)}</div>}
       </section>;
      })}
-    {host!=='supervisor'&&indexing&&<div className="project-loading" aria-label="正在读取项目"><Skeleton className="h-5 w-3/4"/>{Array.from({length:5},(_,i)=><Skeleton className="h-7 w-full" key={i}/>)}</div>}
-    {host!=='supervisor'&&!projects.length&&!indexing&&<div className="aside-empty">{query?'没有匹配的项目或会话':'这台机器还没有会话，可以在指定目录新建。'}</div>}
-    {next&&!indexing&&<button className="more" onClick={()=>readSessions(host,next)}>继续读取项目与会话</button>}
+    {sessionView==='projects'&&host!=='supervisor'&&indexing&&<div className="project-loading" aria-label="正在读取项目"><Skeleton className="h-5 w-3/4"/>{Array.from({length:5},(_,i)=><Skeleton className="h-7 w-full" key={i}/>)}</div>}
+    {sessionView==='projects'&&host!=='supervisor'&&!projects.length&&!indexing&&<div className="aside-empty">{query?'没有匹配的项目或会话':'这台机器还没有会话，可以在指定目录新建。'}</div>}
+    {sessionView==='projects'&&next&&!indexing&&<button className="more" onClick={()=>readSessions(host,next)}>继续读取项目与会话</button>}
    </nav>
    <footer className="side-footer"><span className={'status-dot '+(state.online?'online':'')}/><span>{state.online?'后台已连接':'等待后台连接'}<small>{state.controller||'Controller · 常驻服务'}</small></span><button className="icon" title="任务看板" aria-label="任务看板" onClick={()=>{setShowJobs(true);setSidebar(false)}}><PanelLeftClose size={17}/></button></footer>
   </aside>
@@ -187,7 +199,7 @@ export default function Workbench(){
     {state.approvals.filter(a=>a.host===host&&a.thread===thread?.id).map(a=><div className="approval" key={a.token}><b>需要你的操作</b><p>{a.reason}</p>{a.command&&<pre>{a.command}</pre>}{a.questions?.map((q:QuestionData)=><Question key={q.id} q={q} onAnswer={answer=>perform('answer',{token:a.token,question:q.id,answer})}/>)}{!a.questions&&<div className="approval-actions"><button onClick={()=>perform('approval',{token:a.token,accept:false})}>拒绝</button><button className="primary" onClick={()=>perform('approval',{token:a.token,accept:true})}>允许本次</button></div>}</div>)}
     <div ref={tail}/>
    </div>
-   <div className="composer-wrap"><MessageQueue items={messageQueue} canSteer={canSteer} steerUnavailable={steerUnavailable} onCancel={id=>perform('cancel_queue',{id})} onResume={id=>perform('resume_queue',{id})} onSteer={steerQueued}/><ModelPicker models={state.models?.[host]||[]} model={model} effort={effort} currentModel={host==='supervisor'?state.supervisor_model:thread?.model} currentEffort={host==='supervisor'?state.supervisor_effort:thread?.reasoningEffort} disabled={sending} onChange={chooseModel}/><div className="composer"><textarea aria-label="任务内容" placeholder={host==='supervisor'?'告诉总管家你想做什么…':thread?'继续这个会话，或提交新任务…':'先从左侧选择会话…'} value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();send()}}}/><div className="composer-bottom"><span>{host==='supervisor'?'自动协调 · 按需运行':selectedHost?.label||'尚未选择机器'}</span><div className="send-actions">{active&&<Button variant="outline" size="sm" className="steer-button" title={canSteer?'补充当前正在执行的任务':steerUnavailable} disabled={!canSteer||!state.online||!input.trim()} onClick={()=>send('steer')}>引导</Button>}<button className="send" title={active?'加入队列，等当前轮次结束':'发送任务'} aria-label={active?'加入队列':'发送任务'} onClick={()=>send()} disabled={!state.online||!input.trim()||pendingSends.current>=5||(!thread&&host!=='supervisor')}><ArrowUp size={20}/></button></div></div></div><div className="composer-note">{active?'直接发送会排队；点「引导」补充当前任务。':'⌘ / Ctrl + Enter 发送 · 历史来自服务器上的原始会话'}</div></div>
+   <div className="composer-wrap"><MessageQueue items={messageQueue} canSteer={canSteer} steerUnavailable={steerUnavailable} onCancel={id=>perform('cancel_queue',{id})} onResume={id=>perform('resume_queue',{id})} onSteer={steerQueued}/><ModelPicker models={state.models?.[host]||[]} model={model} effort={effort} currentModel={host==='supervisor'?state.supervisor_model:thread?.model} currentEffort={host==='supervisor'?state.supervisor_effort:thread?.reasoningEffort} disabled={sending} onChange={chooseModel}/><div className="composer"><textarea aria-label="任务内容" placeholder={host==='supervisor'?'告诉总管家你想做什么…':thread?'继续这个会话，或提交新任务…':'先从左侧选择会话…'} value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();send()}}}/><div className="composer-bottom"><span>{host==='supervisor'?'自动协调 · 按需运行':selectedHost?.label||'尚未选择机器'}</span><div className="send-actions">{active&&<Button variant="outline" size="sm" className="steer-button" title={canSteer?'补充当前正在执行的任务':steerUnavailable} disabled={!canSteer||!state.online||!input.trim()} onClick={()=>send('steer')}>引导</Button>}<button className="send" title={active?'加入队列，等当前轮次结束':'发送任务'} aria-label={active?'加入队列':'发送任务'} onClick={()=>send()} disabled={!state.online||!input.trim()||pendingSends.current>=5||(!thread&&host!=='supervisor')}>{sending&&!input.trim()?<LoaderCircle size={19} className="spin"/>:<ArrowUp size={20}/>}</button></div></div></div>{sendNotice&&<div className="send-notice" role="status">{sending?<LoaderCircle size={12} className="spin"/>:!error?<Check size={12}/>:null}<span>{sendNotice}</span></div>}<div className="composer-note">{active?'直接发送会排队；点「引导」补充当前任务。':'⌘ / Ctrl + Enter 发送 · 历史来自服务器上的原始会话'}</div></div>
   </section>
   {modal&&<div className="modal-backdrop"><section className="modal"><div className="modal-head"><h2>新建会话 <small>{selectedHost?.label}</small></h2><button className="icon" aria-label="关闭" onClick={()=>setModal(false)}><X size={20}/></button></div><label>会话名称<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="例如：Qwen 训练实验"/></label><label>工作目录<div className="input-row"><input value={cwd} onChange={e=>setCwd(e.target.value)} placeholder="服务器上的绝对路径"/><button onClick={()=>browse(cwd)}>浏览</button></div></label><div className="root-links">{selectedHost?.roots.map(p=><button key={p} onClick={()=>browse(p)}>{p.split('/').pop()}</button>)}</div>{dirs.length>0&&<div className="directory-list"><button onClick={()=>browse(cwd.slice(0,cwd.lastIndexOf('/'))||'/')}><ChevronLeft size={14}/>上一级</button>{dirs.map(p=><button key={p} onClick={()=>browse(p)}><Folder size={14}/>{p.split('/').pop()}</button>)}</div>}<p className="muted">使用服务器已有的 Codex 配置和登录。</p><button className="primary create" onClick={create} disabled={!!loading||!title.trim()||!cwd}>{loading||'创建并进入'}</button></section></div>}
   {showJobs&&<div className="modal-backdrop"><section className="modal jobs-modal"><div className="modal-head"><h2>任务记录</h2><button className="icon" aria-label="关闭任务" onClick={()=>setShowJobs(false)}><X size={20}/></button></div>{!state.jobs.length&&<p className="muted">还没有提交任务。</p>}{state.jobs.map(j=><div className="job-row" key={j.id}><div><b>{j.host}</b><span className={'badge '+j.status}>{statusNames[j.status]||j.status}</span></div><p>{j.prompt}</p><small>{j.id}</small><div className="job-buttons"><button onClick={()=>{setShowJobs(false);selectThread({id:j.thread,cwd:'',name:'任务会话'},j.host)}}>打开会话</button>{j.status==='unknown'&&<button onClick={()=>perform('reconcile',{job:j.id})}>核查</button>}</div></div>)}</section></div>}
