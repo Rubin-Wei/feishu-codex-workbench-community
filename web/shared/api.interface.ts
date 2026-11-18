@@ -2,7 +2,7 @@ export type JsonObject = Record<string, unknown>;
 export const COMMAND_ACTIONS = [
   'sessions', 'history', 'new_session', 'submit', 'directories', 'stop',
   'reconcile', 'approval', 'answer', 'image', 'supervisor', 'models',
-  'enqueue','steer','cancel_queue','resume_queue',
+  'enqueue','steer','cancel_queue','resume_queue','account','file_preview',
 ] as const;
 export type CommandAction = (typeof COMMAND_ACTIONS)[number];
 export interface CommandRequest { id: string; action: string; args: JsonObject }

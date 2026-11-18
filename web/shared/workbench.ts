@@ -9,10 +9,14 @@ export interface QuestionData {id:string;question:string;options?:{label:string;
 export interface Approval {token:string;host:string;thread:string;reason?:string;command?:string;questions?:QuestionData[]}
 export interface Catalog {threads?:Thread[];connected:boolean;syncing:boolean;updatedAt?:number;error?:string}
 export interface ModelOption {id:string;label:string;efforts:string[];defaultEffort?:string}
-export interface Snapshot {online:boolean;hosts:Host[];jobs:Job[];approvals:Approval[];queue?:QueuedMessage[];revision?:number;catalogs?:Record<string,Catalog>;models?:Record<string,ModelOption[]>;supervisor_model?:string;supervisor_effort?:string;controller?:string}
+export interface Snapshot {online:boolean;hosts:Host[];jobs:Job[];approvals:Approval[];queue?:QueuedMessage[];revision?:number;catalogs?:Record<string,Catalog>;models?:Record<string,ModelOption[]>;supervisor_model?:string;supervisor_effort?:string;controller?:string;snapshotError?:string}
 export interface History {thread:Thread|null;messages:Message[];nextCursor?:string}
 export interface CachedHistory {cached:boolean;updatedAt?:number;value?:History}
+export interface UsageWindow {remainingPercent:number;usedPercent:number;resetsAt:number|null;windowDurationMins:number|null}
+export interface AccountUsage {status:'ok'|'api_key'|'not_logged_in'|'unavailable'|'unsupported_auth';account:{type:string;email?:string|null;planType?:string|null}|null;weekly:UsageWindow|null;primary:UsageWindow|null;updatedAt:number|null;stale:boolean;error:string|null}
+export interface FilePreviewData {path:string;name:string;size:number;kind:'text'|'image'|'pdf';mime:string;truncated:boolean;text?:string;data?:string;encoding:string;bytesRead:number;startLine?:number;endLine?:number}
 export interface CommandReplies {
+ account:AccountUsage;file_preview:FilePreviewData;
  models:ModelOption[];sessions:{data:Thread[];nextCursor:string|null};history:History;supervisor:History;
  directories:{path:string;directories:string[]};new_session:Thread;submit:Job;
  stop:unknown;reconcile:Job;approval:unknown;answer:unknown;image:unknown;

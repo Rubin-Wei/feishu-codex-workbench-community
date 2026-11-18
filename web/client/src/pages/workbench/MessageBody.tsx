@@ -1,4 +1,7 @@
-import {memo, useRef, useState, type ReactNode} from 'react';
+import {memo, useContext, useRef, useState, type ReactNode} from 'react';
+import {defaultUrlTransform} from 'react-markdown';
+import {FilePreviewContext} from './FilePreview';
+import {fileTarget} from './file-links';
 import {Check, Copy} from 'lucide-react';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
@@ -27,11 +30,20 @@ function CodeBlock({children}: {children?: ReactNode}) {
 }
 
 export const MessageBody = memo(function MessageBody({text}: {text: string}) {
+  const openFile=useContext(FilePreviewContext);
   return <Markdown className="message-markdown" remarkPlugins={[remarkMath]}
+    urlTransform={url=>fileTarget(url)?url:defaultUrlTransform(url)}
     rehypePlugins={[[rehypeHighlight, {detect: false, ignoreMissing: true}], rehypeKatex]}
     components={{
+      a: ({href,children}) => {
+        const target=href?fileTarget(href):null;
+        return target?<button className="file-link" title={`预览 ${target.path}`} onClick={()=>openFile(target)}>{children}</button>:<a href={href} target="_blank" rel="noreferrer">{children}</a>;
+      },
       pre: ({children}) => <CodeBlock>{children}</CodeBlock>,
       table: ({children}) => <div className="markdown-table" tabIndex={0} role="region" aria-label="可横向滚动的表格"><table>{children}</table></div>,
-      img: ({src, alt}) => <Image src={src} alt={alt || '会话图片'} sizes="(max-width: 760px) 90vw, 780px"/>,
+      img: ({src, alt}) => {
+        const target=typeof src==='string'?fileTarget(src):null;
+        return target?<button className="file-link" onClick={()=>openFile(target)}>查看图片：{alt||target.path.split('/').pop()}</button>:<Image src={src} alt={alt || '会话图片'} sizes="(max-width: 760px) 90vw, 780px"/>;
+      },
     }}>{text}</Markdown>;
 });

@@ -6,6 +6,8 @@ import {MessageQueue} from './MessageQueue';
 import {Button} from '@client/src/components/ui/button';
 import {followLive} from '@client/src/api/workbench/live';
 import {MessageBody} from './MessageBody';
+import {AccountUsage} from './AccountUsage';
+import {FilePreviewProvider} from './FilePreview';
 import {groupProjects, projectName} from './projects';
 import {Skeleton} from '@client/src/components/ui/skeleton';
 import {api, command, errorMessage, logout} from '@client/src/api/workbench';
@@ -31,7 +33,7 @@ export default function Workbench(){
    if((snapshot.current.revision||0)>(data.revision||0)){const {jobs,approvals,queue,revision}=snapshot.current;data={...data,jobs,approvals,queue,revision}}
    snapshot.current=data;setState(data);
    const selected=current.current;
-   if(data.catalogs?.[selected.host]){
+   if(Array.isArray(data.catalogs?.[selected.host]?.threads)){
     const list=catalogThreads(data,selected.host);setThreads(list);setIndexing(!data.catalogs[selected.host].threads);setNext(null);
     const renamed=list.find(t=>t.id===selected.thread?.id);
     if(renamed)setThread(t=>t?.id===renamed.id?{...t,...renamed}:t);
@@ -81,7 +83,7 @@ export default function Workbench(){
   setThreads([]);setNext(null);setOlder(null);setError('');setLoading('');
   if(id!=='supervisor'){
    const catalog=snapshot.current.catalogs?.[id];
-   if(catalog){setThreads(catalogThreads(snapshot.current,id));setIndexing(!catalog.threads);return}
+   if(Array.isArray(catalog?.threads)){setThreads(catalogThreads(snapshot.current,id));setIndexing(false);return}
    await readSessions(id,null,true);return;
   }
   setLoading('正在读取会话…');
@@ -149,7 +151,7 @@ export default function Workbench(){
  })).filter(r=>[r.session.name,r.session.preview,r.session.cwd,r.hostLabel].some(s=>s?.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())));
  function openNew(path=thread?.cwd||selectedHost?.default_cwd||''){setTitle('');setDirs([]);setCwd(path);setModal(true)}
  function toggleProject(path:string){setCollapsed(previous=>{const value=new Set(previous);if(value.has(path))value.delete(path);else value.add(path);return value})}
- return <main className="app-shell">
+ return <FilePreviewProvider host={host} thread={thread?.id}><main className="app-shell">
   {sidebar&&<div className="scrim" onClick={()=>setSidebar(false)}/>}
   <aside className={'sidebar '+(sidebar?'open':'')}>
    <div className="brand"><span className="brand-icon"><Command size={18}/></span><b>Codex <span>Workspace</span></b><button className="icon mobile" aria-label="关闭菜单" onClick={()=>setSidebar(false)}><X size={18}/></button></div>
@@ -185,8 +187,10 @@ export default function Workbench(){
   </aside>
   <section className="conversation">
    <header className="conversation-header"><button className="icon mobile" aria-label="选择会话" onClick={()=>setSidebar(true)}><Menu size={21}/></button><div><div className="breadcrumb">{host==='supervisor'?'个人工作台':`${selectedHost?.label||host} / ${thread?.cwd?projectName(thread.cwd):'项目'}`}</div><h1>{host==='supervisor'?'总管家':thread?.name||thread?.preview?.slice(0,70)||'选择一个会话'}</h1></div><div className="header-actions"><span className="model-label">{host==='supervisor'?(state.supervisor_model||'原生 Codex'):'远端 Codex'}</span><button className="icon" aria-label="刷新历史" disabled={!thread||!!loading} onClick={()=>thread&&selectThread(thread,host,true)}><RefreshCw size={16}/></button><button className="soft-button" onClick={()=>setShowJobs(true)}>任务</button><button className="icon" aria-label="退出登录" title="退出登录" onClick={async()=>{clearHistoryCache();await logout()}}><ExternalLink size={15}/></button></div></header>
+   <AccountUsage host={host} online={state.online}/>
    {thread?.cwd&&<div className="cwd-line"><Folder size={13}/><span>{thread.cwd}</span><code title={thread.id}>{thread.id.slice(-8)}</code></div>}
    {host!=='supervisor'&&state.catalogs?.[host]?.error&&<div className="connection-notice">该机器正在重连，先显示已同步的会话。</div>}
+   {state.snapshotError&&<div className="connection-notice" role="status">{state.snapshotError}</div>}
    {error&&<div className="error" role="alert"><span>{error}</span><button className="icon" aria-label="关闭提示" onClick={()=>setError('')}><X size={15}/></button></div>}
    <div className="messages" ref={messagesView} onScroll={()=>{const box=messagesView.current;if(box)stickBottom.current=box.scrollHeight-box.scrollTop-box.clientHeight<100}}>
     {older&&<button className="load-older" disabled={!!loading} onClick={loadOlder}>查看更早的对话</button>}
@@ -203,6 +207,6 @@ export default function Workbench(){
   </section>
   {modal&&<div className="modal-backdrop"><section className="modal"><div className="modal-head"><h2>新建会话 <small>{selectedHost?.label}</small></h2><button className="icon" aria-label="关闭" onClick={()=>setModal(false)}><X size={20}/></button></div><label>会话名称<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="例如：Qwen 训练实验"/></label><label>工作目录<div className="input-row"><input value={cwd} onChange={e=>setCwd(e.target.value)} placeholder="服务器上的绝对路径"/><button onClick={()=>browse(cwd)}>浏览</button></div></label><div className="root-links">{selectedHost?.roots.map(p=><button key={p} onClick={()=>browse(p)}>{p.split('/').pop()}</button>)}</div>{dirs.length>0&&<div className="directory-list"><button onClick={()=>browse(cwd.slice(0,cwd.lastIndexOf('/'))||'/')}><ChevronLeft size={14}/>上一级</button>{dirs.map(p=><button key={p} onClick={()=>browse(p)}><Folder size={14}/>{p.split('/').pop()}</button>)}</div>}<p className="muted">使用服务器已有的 Codex 配置和登录。</p><button className="primary create" onClick={create} disabled={!!loading||!title.trim()||!cwd}>{loading||'创建并进入'}</button></section></div>}
   {showJobs&&<div className="modal-backdrop"><section className="modal jobs-modal"><div className="modal-head"><h2>任务记录</h2><button className="icon" aria-label="关闭任务" onClick={()=>setShowJobs(false)}><X size={20}/></button></div>{!state.jobs.length&&<p className="muted">还没有提交任务。</p>}{state.jobs.map(j=><div className="job-row" key={j.id}><div><b>{j.host}</b><span className={'badge '+j.status}>{statusNames[j.status]||j.status}</span></div><p>{j.prompt}</p><small>{j.id}</small><div className="job-buttons"><button onClick={()=>{setShowJobs(false);selectThread({id:j.thread,cwd:'',name:'任务会话'},j.host)}}>打开会话</button>{j.status==='unknown'&&<button onClick={()=>perform('reconcile',{job:j.id})}>核查</button>}</div></div>)}</section></div>}
- </main>
+ </main></FilePreviewProvider>
 }
 function Question({q,onAnswer}:{q:QuestionData,onAnswer:(a:string)=>void}){const[a,setA]=useState('');return <div className="question"><p>{q.question}</p>{q.options?.map((o:{label:string})=><button key={o.label} onClick={()=>onAnswer(o.label)}>{o.label}</button>)}<div className="input-row"><input aria-label={q.question} value={a} onChange={e=>setA(e.target.value)} placeholder="输入补充信息"/><button disabled={!a.trim()} onClick={()=>onAnswer(a)}>回复</button></div></div>}

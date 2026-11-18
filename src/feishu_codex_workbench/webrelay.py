@@ -14,6 +14,8 @@ import httpx
 from .cluster import remote_file, remote_history
 from .rpc import RpcError, CompatibilityError
 from .readcache import ReadCache, compact_thread
+from .accounts import AccountCache
+from .filepreview import preview_file
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +40,68 @@ class WebRelay:
             self.s.state.db.execute("UPDATE web_commands SET status='ready',ok=0,result=? WHERE status='processing'",
                 (json.dumps({'error':'后台重启，操作结果未确认。未自动重新执行，请核查任务及原会话。'}, ensure_ascii=False),))
         self.cache = ReadCache(self)
+        self.accounts = AccountCache(self.s.get_client)
+
+    def exchange_payload(self, ready, cache_updates):
+        payload = {'snapshot':self.snapshot(),'results':[],
+                   'capacity':max(0,4-len(self.tasks)),'cacheUpdates':[]}
+        def encoded_size(value):
+            return len(json.dumps(value,ensure_ascii=False).encode())
+        # Reserve enough room for any single supported result. Only unusually
+        # large snapshots lose display detail; persisted history stays intact.
+        if encoded_size(payload) > 750_000:
+            import copy
+            snapshot = payload['snapshot'] = copy.deepcopy(payload['snapshot'])
+            snapshot['snapshotTruncated'] = True
+            for job in snapshot.get('jobs',[]):
+                for key in ('prompt','result','partial'):
+                    if isinstance(job.get(key),str):job[key]=job[key][:2000]
+                job['partialItems'] = []
+            for item in snapshot.get('queue',[]):
+                for key in ('prompt','error','paused'):
+                    if isinstance(item.get(key),str):item[key]=item[key][:1000]
+            if encoded_size(payload) > 750_000:
+                catalogs = sorted(snapshot.get('catalogs',{}).values(),key=encoded_size,reverse=True)
+                for catalog in catalogs:
+                    catalog.pop('threads',None)
+                    catalog['syncing'] = True
+                    if encoded_size(payload) <= 750_000:break
+            # Retain active jobs first when old completed jobs dominate a batch.
+            for job in reversed(list(snapshot.get('jobs',[]))):
+                if encoded_size(payload) <= 750_000:break
+                if job.get('status') not in ('starting','running','waiting','unknown'):
+                    snapshot['jobs'].remove(job)
+            if encoded_size(payload) > 750_000:
+                # Models can be read explicitly; complete queued prompts remain
+                # in the local durable queue. Preserve IDs and task status.
+                snapshot['models'] = {}
+                for job in snapshot.get('jobs',[]):
+                    for key in ('prompt','result','partial'):
+                        if isinstance(job.get(key),str):job[key]=job[key][:200]
+                for item in snapshot.get('queue',[]):
+                    for key in ('prompt','error','paused'):
+                        if isinstance(item.get(key),str):item[key]=item[key][:200]
+            if encoded_size(payload) > 750_000:
+                # An exceptional oversized interactive request must not starve
+                # other read results. Its complete content remains in Codex.
+                snapshot['approvals'] = []
+                snapshot['snapshotError'] = '部分交互内容过大，请在原客户端查看完整内容。'
+        # Binary previews can be much larger than command acknowledgements.
+        # Prioritize results and leave unacknowledged entries for the next batch.
+        budget = 1_800_000 - encoded_size(payload)
+        for row in ready:
+            result = {'id':row['id'],'ok':bool(row['ok']),'value':json.loads(row['result'])}
+            size = len(json.dumps(result,ensure_ascii=False).encode()) + 2
+            if size > 1_000_000:
+                result = {'id':row['id'],'ok':False,'value':{'error':'结果过大，请缩小读取范围后重试'}}
+                size = len(json.dumps(result,ensure_ascii=False).encode()) + 2
+            if size > budget:continue
+            payload['results'].append(result);budget -= size
+        for entry in cache_updates:
+            size = len(json.dumps(entry,ensure_ascii=False).encode()) + 2
+            if size > budget:continue
+            payload['cacheUpdates'].append(entry);budget -= size
+        return payload
 
     def snapshot(self):
         s = self.s
@@ -95,11 +159,8 @@ class WebRelay:
                     self.exchange_event.clear()
                     with self.s.state.lock:
                         ready = [dict(r) for r in self.s.state.db.execute("SELECT * FROM web_commands WHERE status='ready' LIMIT 20")]
-                    results = [{'id':r['id'],'ok':bool(r['ok']),'value':json.loads(r['result'])} for r in ready]
                     cache_updates = self.cache.pending()
-                    response = await self.client.post(self.agent_url,json={
-                        'snapshot':self.snapshot(),'results':results,'capacity':max(0,4-len(self.tasks)),
-                        'cacheUpdates':cache_updates})
+                    response = await self.client.post(self.agent_url,json=self.exchange_payload(ready,cache_updates))
                     response.raise_for_status()
                     data = response.json()
                     self.cache.acknowledge(data.get('cacheAcked', []))
@@ -207,6 +268,22 @@ class WebRelay:
         owner = s.state.get('owner',{})
         if not owner.get('open_id') or not owner.get('chat'):raise ValueError('请先在飞书完成个人绑定')
         chat,who = owner['chat'],owner['open_id']
+        if action in ('account','file_preview'):
+            host = a.get('host')
+            actual_host = s.config.supervisor_host if host=='supervisor' else host
+            if actual_host not in s.config.hosts:raise ValueError('未知的执行机器')
+            if action=='account':return await self.accounts.get(actual_host,force=a.get('force') is True)
+            thread = a.get('thread')
+            if not isinstance(thread,str) or not thread:raise ValueError('请指定文件所属的会话')
+            if host=='supervisor' and thread!=s.state.get('supervisor:'+chat):raise ValueError('会话不属于当前总管家')
+            try:metadata = await asyncio.wait_for(s.metadata(host,thread),20)
+            except (CompatibilityError, RpcError, ConnectionError, TimeoutError):
+                metadata = s.state.get('rollout:'+actual_host+':'+thread)
+                if not metadata:raise
+            if metadata.get('id')!=thread:raise ValueError('会话信息不匹配')
+            value = await preview_file(s.config.hosts[actual_host],a.get('path'),metadata['cwd'])
+            if value.get('kind')=='text':value['text']=s.redact(value['text'])
+            return value
         if action=='models':return await s.list_models(a['host'])
         if action=='sessions':
             page = await s.list_sessions(a['host'],a.get('cursor'),a.get('limit',10))
